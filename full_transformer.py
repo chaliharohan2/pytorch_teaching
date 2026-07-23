@@ -3,7 +3,7 @@ import torch.nn as nn
 
 device = torch.device("cuda")
 
-MAX_LENGTH = 50
+MAX_LENGTH = 200
 BATCH_SIZE = 32
 EMBEDDING_SIZE = 200
 HEAD_SIZE = 20
@@ -93,8 +93,9 @@ class GPT(nn.Module):
                 for _ in range(num_decoder_layers)
             ]
         )
-        self.final_layer_norm = nn.LayerNorm(embedding_size)
+        self.final_layer_norm = nn.LayerNorm(embedding_size, device=device)
         self.linear_output = nn.Linear(embedding_size, vocab_size, device=device)
+        self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x):
         # gets the embeddings for the textual content in each batch
@@ -112,6 +113,20 @@ class GPT(nn.Module):
 
         return x
 
+    def generate(self, max_tokens, token_to_char, max_context_length, start_token=18):
+        with torch.no_grad():
+            sequence = torch.tensor([start_token], device=device).unsqueeze(0)
+
+            for _ in range(max_tokens):
+                preds = self(sequence[:, -max_context_length:]) # 1, C, vocab_size - making sure only the max context length tokens go in
+                preds = preds[:, -1, :] # only interested in the last token vals - 1, vocab_size
+                preds = self.softmax(preds) # get probabilities of each word in vocab - 1, vocab_size
+                pred = torch.multinomial(preds, num_samples=1)
+                pred_token = token_to_char.get(pred.item())
+                print(pred_token, end="", flush=True)
+
+                sequence = torch.cat([sequence, pred], dim=1)
+
 with open("/home/nz-dgx-spark-01/Documents/Nyalazone/pytorch_testing/shakespeare_dataset.txt", mode="r") as f:
     raw_data = f.read()
 
@@ -122,6 +137,11 @@ token_to_char = {i: char for i, char in enumerate(raw_unique_chars)}
 encode = lambda x: [tokenizer.get(c) for c in x]
 
 vocab_size = len(raw_unique_chars)
+
+# Training components initialized
+model = GPT(vocab_size=vocab_size, max_context_length=MAX_LENGTH, embedding_size=EMBEDDING_SIZE, num_heads=NUM_HEADS, head_size=HEAD_SIZE, num_decoder_layers=NUM_DECODER_BLOCKS)
+loss_fn = nn.CrossEntropyLoss()
+optimizer = torch.optim.AdamW(params=model.parameters(), lr=3e-4)
 
 j = 0
 raw_dataset = []
@@ -147,3 +167,49 @@ while k < len(raw_dataset):
     dataset.append([in_tokens, out_tokens])
     
     k += BATCH_SIZE
+
+# training loop start
+
+for epoch in range(1, 100):
+
+    model.train()
+    epoch_loss_vals = []
+    interval = 0
+
+    for data_in, data_out in dataset:
+
+        optimizer.zero_grad()
+
+        pred = model(data_in)
+
+        B, T, C = pred.shape
+
+        loss = loss_fn(pred.view(B*T, C), data_out.view(B*T))
+
+        epoch_loss_vals.append(loss.item())
+
+        loss.backward()
+        # TODO: Add gradient clipping later
+        optimizer.step()
+
+        if interval % 20 == 0:
+            model.eval()
+
+            print("*"*100)
+            print(f"Generating after {interval} batches: ")
+
+            model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
+
+            print("\n")
+            print("*"*100)
+
+            model.train()
+
+        interval += 1
+
+    
+    print("\nEpoch ", epoch, "\nAvg loss: ", sum(epoch_loss_vals)/float(len(epoch_loss_vals)), "\n")
+    print("Generate: ")
+    model.eval()
+    model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
+    print("\n\n")
