@@ -6,8 +6,9 @@ device = torch.device("cuda")
 MAX_LENGTH = 50
 BATCH_SIZE = 32
 EMBEDDING_SIZE = 200
-HEAD_SIZE = 400
+HEAD_SIZE = 20
 NUM_HEADS = 10
+NUM_DECODER_BLOCKS = 6
 
 class AttentionHead(nn.Module):
     def __init__(self, embedding_size, head_size):
@@ -38,13 +39,17 @@ class AttentionHead(nn.Module):
 class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, embedding_size, head_size):
         super().__init__()
-        self.num_heads = num_heads
-        self.attn_head = AttentionHead(embedding_size=embedding_size, head_size=head_size)
+        self.attn_heads = nn.ModuleList(
+            [
+                AttentionHead(embedding_size=embedding_size, head_size=head_size)
+                for _ in range(num_heads)
+            ]
+        )
         self.proj = nn.Linear(head_size*num_heads, embedding_size, device=device)
 
     def forward(self, x):
         # after text and position embeddings and layer norm are done
-        x = torch.cat([self.attn_head(x) for _ in range(self.num_heads)], dim=-1) # (B, C, head_size*num_heads)
+        x = torch.cat([head(x) for head in self.attn_heads], dim=-1) # (B, C, head_size*num_heads)
         x = self.proj(x) # (B, C, head_size*num_heads) x (head_size*num_heads, E) = (B, C, E)
 
         return x
@@ -61,7 +66,7 @@ class FeedForward(nn.Module):
         # x after passing through attention and going through layer norm
         return self.l2(self.relu(self.l1(x)))
 
-class TransformerBlock(nn.Module):
+class TransformerDecoderBlock(nn.Module):
     def __init__(self, embedding_size, num_heads, head_size):
         super().__init__()
         self.attn_block = MultiHeadAttention(num_heads=num_heads, embedding_size=embedding_size, head_size=head_size)
@@ -77,13 +82,35 @@ class TransformerBlock(nn.Module):
 
         return x
 
-feed_forward = TransformerBlock(10, 5, 20)
-a = torch.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]], device=device)
-embed_table = nn.Embedding(20, 10, device=device)
-a = embed_table(a) 
-out = feed_forward(a)
-print(out.shape)
-exit()
+class GPT(nn.Module):
+    def __init__(self, vocab_size, max_context_length, embedding_size, num_heads, head_size, num_decoder_layers):
+        super().__init__()
+        self.text_embedding_table = nn.Embedding(vocab_size, embedding_size, device=device)
+        self.position_embedding_table = nn.Embedding(max_context_length, embedding_size, device=device)
+        self.transformer = nn.ModuleList(
+            [
+                TransformerDecoderBlock(embedding_size=embedding_size, num_heads=num_heads, head_size=head_size)
+                for _ in range(num_decoder_layers)
+            ]
+        )
+        self.final_layer_norm = nn.LayerNorm(embedding_size)
+        self.linear_output = nn.Linear(embedding_size, vocab_size, device=device)
+
+    def forward(self, x):
+        # gets the embeddings for the textual content in each batch
+        text_embeddings = self.text_embedding_table(x) # B, C -> B, C, E
+        # gets the embeddings for the positions of each element of each batch
+        input_positions = torch.stack([torch.arange(len(item), device=device) for item in x])
+        position_embeddings = self.position_embedding_table(input_positions) # B, C -> B, C, E
+
+        x = text_embeddings + position_embeddings # B, C, E
+
+        for decoder_block in self.transformer:
+            x = decoder_block(x)
+
+        x = self.linear_output(self.final_layer_norm(x)) # (B, C, E) x (E, vocab_size) = (B, C, vocab_size)
+
+        return x
 
 with open("/home/nz-dgx-spark-01/Documents/Nyalazone/pytorch_testing/shakespeare_dataset.txt", mode="r") as f:
     raw_data = f.read()
