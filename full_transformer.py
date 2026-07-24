@@ -1,5 +1,6 @@
 import torch 
 import torch.nn as nn
+import random
 
 device = torch.device("cuda")
 
@@ -168,15 +169,38 @@ while k < len(raw_dataset):
     
     k += BATCH_SIZE
 
+# break into training and test sets (90-10 split)
+train_dataset = dataset[:int(0.9*len(dataset))]
+test_dataset = dataset[int(0.9*len(dataset)):]
+
+# define eval function for intermediate generation
+def interm_eval(model: GPT, interval: int, phase: str):
+    model.eval()
+    
+    print("*"*100)
+    print(f"Generating after {interval} {phase} batches: ")
+    
+    model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
+    
+    print("\n")
+    print("*"*100)
+    
+    model.train()
+
 # training loop start
+
+best_test_loss = float('inf')
+num_tries = 0
 
 for epoch in range(1, 100):
 
     model.train()
-    epoch_loss_vals = []
-    interval = 0
+    epoch_train_loss_vals = []
+    train_interval = 0
+    epoch_test_loss_vals = []
 
-    for data_in, data_out in dataset:
+    # going through training batches
+    for data_in, data_out in train_dataset:
 
         optimizer.zero_grad()
 
@@ -186,30 +210,44 @@ for epoch in range(1, 100):
 
         loss = loss_fn(pred.view(B*T, C), data_out.view(B*T))
 
-        epoch_loss_vals.append(loss.item())
+        epoch_train_loss_vals.append(loss.item())
 
         loss.backward()
         # TODO: Add gradient clipping later
         optimizer.step()
 
-        if interval % 20 == 0:
-            model.eval()
+        if train_interval % 10_000 == 0:
+            interm_eval(model=model, interval=train_interval, phase="Train")
+        train_interval += 1
 
-            print("*"*100)
-            print(f"Generating after {interval} batches: ")
-
-            model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
-
-            print("\n")
-            print("*"*100)
-
-            model.train()
-
-        interval += 1
-
-    
-    print("\nEpoch ", epoch, "\nAvg loss: ", sum(epoch_loss_vals)/float(len(epoch_loss_vals)), "\n")
-    print("Generate: ")
+    # going through test batches
     model.eval()
+    with torch.no_grad():
+        for test_data_in, test_data_out in test_dataset:
+            pred = model(test_data_in)
+            
+            B, T, C = pred.shape
+            
+            loss = loss_fn(pred.view(B*T, C), test_data_out.view(B*T))
+            
+            epoch_test_loss_vals.append(loss.item())
+
+    avg_train_loss = sum(epoch_train_loss_vals)/float(len(epoch_train_loss_vals))
+    avg_test_loss = sum(epoch_test_loss_vals)/float(len(epoch_test_loss_vals))
+
+    print("\nEpoch ", epoch, "\nAvg Training loss: ", avg_train_loss, "\nAvg Test Loss: ", avg_test_loss, "\n")
+    print("Generate: ")
     model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
-    print("\n\n")
+    print("\n")
+
+    if avg_test_loss < best_test_loss:
+        best_test_loss = avg_test_loss
+        print("Saving model....\n\n")
+        torch.save(obj=model.state_dict(), f="./full_transformer.pt")
+        num_tries = 0
+    elif num_tries > 0:
+        print("Loss did not decrease for 2 times in a row, exiting....\n\n")
+        break
+    else:
+        print("Loss greater than previous epoch, not saving model\n\n")
+        num_tries += 1
