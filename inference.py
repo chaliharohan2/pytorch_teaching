@@ -123,7 +123,6 @@ class GPT(nn.Module):
     def generate(self, max_tokens, token_to_char, max_context_length, start_token=18):
         with torch.no_grad():
             sequence = torch.tensor([start_token], device=device).unsqueeze(0) if type(start_token) == int else torch.tensor(start_token, device=device).unsqueeze(0)
-
             for _ in range(max_tokens):
                 preds = self(sequence[:, -max_context_length:]) # 1, C, vocab_size - making sure only the max context length tokens go in
                 preds = preds[:, -1, :] # only interested in the last token vals - 1, vocab_size
@@ -135,9 +134,15 @@ class GPT(nn.Module):
                 sequence = torch.cat([sequence, pred], dim=1)
 model = GPT(vocab_size=vocab_size, max_context_length=MAX_LENGTH, embedding_size=EMBEDDING_SIZE, num_heads=NUM_HEADS, head_size=HEAD_SIZE, num_decoder_layers=NUM_DECODER_BLOCKS)
 
-# model.load_state_dict(torch.load("./full_transformer.pt"))
+model.load_state_dict(torch.load("./full_transformer.pt"))
 
 print("Generate: ")
-model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH, start_token=0)
-model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH, start_token=[tokenizer.get(char) for char in "ROMEO" ])
+
+# from new line start
+# model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH, start_token=0)
+
+# from sentence start
+start_word = "ANTONIO"
+print(start_word, end="", flush=True)
+model.generate(800, token_to_char=token_to_char, max_context_length=MAX_LENGTH, start_token=[tokenizer.get(char) for char in start_word ])
 print("\n")
