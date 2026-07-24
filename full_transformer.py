@@ -156,22 +156,31 @@ while j < len(raw_data):
 
     j += 1
 
-dataset = []
+train_raw = raw_dataset[:int(0.9*len(raw_dataset))]
+test_raw = raw_dataset[int(0.9*len(raw_dataset)):]
 
-k = 0
-while k < len(raw_dataset):
-    batch = raw_dataset[k:k+BATCH_SIZE]
+# shuffle data before splitting into batches
+random.shuffle(train_raw)
+random.shuffle(test_raw)
 
-    in_tokens = torch.stack([data[0] for data in batch])
-    out_tokens = torch.stack([data[1] for data in batch])
+def make_batches(raw_data):
+    dataset = []
+    k = 0
+    while k < len(raw_data):
+        batch = raw_data[k:k+BATCH_SIZE]
 
-    dataset.append([in_tokens, out_tokens])
-    
-    k += BATCH_SIZE
+        in_tokens = torch.stack([data[0] for data in batch])
+        out_tokens = torch.stack([data[1] for data in batch])
+
+        dataset.append([in_tokens, out_tokens])
+        
+        k += BATCH_SIZE
+
+    return dataset
 
 # break into training and test sets (90-10 split)
-train_dataset = dataset[:int(0.9*len(dataset))]
-test_dataset = dataset[int(0.9*len(dataset)):]
+train_dataset = make_batches(raw_data=train_raw)
+test_dataset = make_batches(raw_data=test_raw)
 
 # define eval function for intermediate generation
 def interm_eval(model: GPT, interval: int, phase: str):
@@ -194,6 +203,7 @@ num_tries = 0
 
 for epoch in range(1, 100):
 
+    random.shuffle(train_dataset)
     model.train()
     epoch_train_loss_vals = []
     train_interval = 0
