@@ -2,3 +2,6 @@
 venv/
 .venv/
 *.json
+*.pt
+*.pkl
+__pycache__/
