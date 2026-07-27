@@ -5,3 +5,6 @@ venv/
 *.pt
 *.pkl
 __pycache__/
+datasets/
+.cursor/
+CLAUDE.md

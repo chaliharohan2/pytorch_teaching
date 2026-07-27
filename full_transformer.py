@@ -1,15 +1,22 @@
 import torch 
 import torch.nn as nn
 import random
+import sys
+import glob
+import json
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 MAX_LENGTH = 200
 BATCH_SIZE = 32
 EMBEDDING_SIZE = 200
+
 HEAD_SIZE = 20
 NUM_HEADS = 10
 NUM_DECODER_BLOCKS = 6
+DROPOUT_VAL = 0.2
+DATASET_TO_USE = "tiny_shakespeare"
+# DATASET_TO_USE = "full_shakespeare"
 
 class AttentionHead(nn.Module):
     def __init__(self, embedding_size, head_size):
@@ -19,6 +26,7 @@ class AttentionHead(nn.Module):
         self.w_k = nn.Linear(embedding_size, head_size, device=device)
         self.w_v = nn.Linear(embedding_size, head_size, device=device)
         self.softmax = nn.Softmax(dim=-1)
+        self.dropout = nn.Dropout(p=DROPOUT_VAL)
 
     def forward(self, x):
 
@@ -32,7 +40,7 @@ class AttentionHead(nn.Module):
         query_key_result = (q @ k.transpose(1, 2))/(self.head_size ** 0.5) # (B, C, head_size) x (B, head_size, C) = (batch, C, C)
         query_key_result = query_key_result.masked_fill(torch.tril(torch.ones(C, C, device=device)) == 0, float('-inf'))
         query_key_result = self.softmax(query_key_result)
-
+        query_key_result = self.dropout(query_key_result)
         attn_out = query_key_result @ v # (B, C, C) * (B, C, head_size) = (B, C, head_size)
 
         return attn_out
@@ -47,11 +55,12 @@ class MultiHeadAttention(nn.Module):
             ]
         )
         self.proj = nn.Linear(head_size*num_heads, embedding_size, device=device)
+        self.dropout = nn.Dropout(p=DROPOUT_VAL)
 
     def forward(self, x):
         # after text and position embeddings and layer norm are done
         x = torch.cat([head(x) for head in self.attn_heads], dim=-1) # (B, C, head_size*num_heads)
-        x = self.proj(x) # (B, C, head_size*num_heads) x (head_size*num_heads, E) = (B, C, E)
+        x = self.dropout(self.proj(x)) # (B, C, head_size*num_heads) x (head_size*num_heads, E) = (B, C, E)
 
         return x
 
@@ -61,11 +70,12 @@ class FeedForward(nn.Module):
         self.l1 = nn.Linear(embedding_size, 4*embedding_size, device=device) # B, C, 4*E
         self.relu = nn.ReLU()
         self.l2 = nn.Linear(4*embedding_size, embedding_size, device=device) # B, C, E
+        self.dropout = nn.Dropout(p=DROPOUT_VAL)
 
     def forward(self, x):
 
         # x after passing through attention and going through layer norm
-        return self.l2(self.relu(self.l1(x)))
+        return self.dropout(self.l2(self.relu(self.l1(x))))
 
 class TransformerDecoderBlock(nn.Module):
     def __init__(self, embedding_size, num_heads, head_size):
@@ -114,7 +124,7 @@ class GPT(nn.Module):
 
         return x
 
-    def generate(self, max_tokens, token_to_char, max_context_length, start_token=18):
+    def generate(self, max_tokens, token_to_char, max_context_length, start_token=1):
         with torch.no_grad():
             sequence = torch.tensor([start_token], device=device).unsqueeze(0) if type(start_token) == int else torch.tensor(start_token, device=device).unsqueeze(0)
             for _ in range(max_tokens):
@@ -127,8 +137,19 @@ class GPT(nn.Module):
 
                 sequence = torch.cat([sequence, pred], dim=1)
 
-with open("/home/nz-dgx-spark-01/Documents/Nyalazone/pytorch_testing/shakespeare_dataset.txt", mode="r") as f:
-    raw_data = f.read()
+if DATASET_TO_USE == "tiny_shakespeare":
+    with open("/home/nz-dgx-spark-01/Documents/Nyalazone/pytorch_testing/shakespeare_dataset.txt", mode="r") as f:
+        raw_data = f.read()
+elif DATASET_TO_USE == "full_shakespeare":
+    ROOT_DIR = "/home/nz-dgx-spark-01/Documents/Nyalazone/pytorch_testing/datasets/shakespeare-dataset/text"
+    raw_data = ""
+
+    for file_path in glob.glob("*.txt", root_dir=ROOT_DIR):
+        with open(f"{ROOT_DIR}/{file_path}", mode="r") as f:
+            raw_data += "\n" + f.read().replace("\u2019", "'")
+else:
+    print("Incorrect dataset to use.")
+    sys.exit(1)
 
 raw_unique_chars = list(sorted(set(raw_data)))
 
@@ -151,7 +172,7 @@ if __name__ == "__main__":
 
         # skip sequences whose length is not equal to max length (usually will be end sequences)
         if len(raw_data[j:j+MAX_LENGTH]) == MAX_LENGTH and len(raw_data[j+1:j+1+MAX_LENGTH]) == MAX_LENGTH:
-            new_data = [torch.tensor(encode(raw_data[j:j+MAX_LENGTH]), device=device), torch.tensor(encode(raw_data[j+1:j+1+MAX_LENGTH]), device=device)]
+            new_data = [torch.tensor(encode(raw_data[j:j+MAX_LENGTH]), device=torch.device("cpu")), torch.tensor(encode(raw_data[j+1:j+1+MAX_LENGTH]), device=torch.device("cpu"))]
             raw_dataset.append(new_data)
 
         j += 1
@@ -214,11 +235,11 @@ if __name__ == "__main__":
 
             optimizer.zero_grad()
 
-            pred = model(data_in)
+            pred = model(data_in.to(device))
 
             B, T, C = pred.shape
 
-            loss = loss_fn(pred.view(B*T, C), data_out.view(B*T))
+            loss = loss_fn(pred.view(B*T, C), data_out.to(device).view(B*T))
 
             epoch_train_loss_vals.append(loss.item())
 
@@ -234,11 +255,11 @@ if __name__ == "__main__":
         model.eval()
         with torch.no_grad():
             for test_data_in, test_data_out in test_dataset:
-                pred = model(test_data_in)
+                pred = model(test_data_in.to(device))
                 
                 B, T, C = pred.shape
                 
-                loss = loss_fn(pred.view(B*T, C), test_data_out.view(B*T))
+                loss = loss_fn(pred.view(B*T, C), test_data_out.to(device).view(B*T))
                 
                 epoch_test_loss_vals.append(loss.item())
 
@@ -253,7 +274,7 @@ if __name__ == "__main__":
         if avg_test_loss < best_test_loss:
             best_test_loss = avg_test_loss
             print("Saving model....\n\n")
-            torch.save(obj=model.state_dict(), f="./full_transformer.pt")
+            torch.save(obj=model.state_dict(), f="./full_transformer_full_shakespeare.pt")
             num_tries = 0
         elif num_tries > 0:
             print("Loss did not decrease for 2 times in a row, exiting....\n\n")
