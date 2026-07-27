@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import random
 
-device = torch.device("cuda")
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 MAX_LENGTH = 200
 BATCH_SIZE = 32
@@ -116,8 +116,7 @@ class GPT(nn.Module):
 
     def generate(self, max_tokens, token_to_char, max_context_length, start_token=18):
         with torch.no_grad():
-            sequence = torch.tensor([start_token], device=device).unsqueeze(0)
-
+            sequence = torch.tensor([start_token], device=device).unsqueeze(0) if type(start_token) == int else torch.tensor(start_token, device=device).unsqueeze(0)
             for _ in range(max_tokens):
                 preds = self(sequence[:, -max_context_length:]) # 1, C, vocab_size - making sure only the max context length tokens go in
                 preds = preds[:, -1, :] # only interested in the last token vals - 1, vocab_size
@@ -144,120 +143,121 @@ model = GPT(vocab_size=vocab_size, max_context_length=MAX_LENGTH, embedding_size
 loss_fn = nn.CrossEntropyLoss()
 optimizer = torch.optim.AdamW(params=model.parameters(), lr=3e-4)
 
-j = 0
-raw_dataset = []
+if __name__ == "__main__":
+    j = 0
+    raw_dataset = []
 
-while j < len(raw_data):
+    while j < len(raw_data):
 
-    # skip sequences whose length is not equal to max length (usually will be end sequences)
-    if len(raw_data[j:j+MAX_LENGTH]) == MAX_LENGTH and len(raw_data[j+1:j+1+MAX_LENGTH]) == MAX_LENGTH:
-        new_data = [torch.tensor(encode(raw_data[j:j+MAX_LENGTH]), device=device), torch.tensor(encode(raw_data[j+1:j+1+MAX_LENGTH]), device=device)]
-        raw_dataset.append(new_data)
+        # skip sequences whose length is not equal to max length (usually will be end sequences)
+        if len(raw_data[j:j+MAX_LENGTH]) == MAX_LENGTH and len(raw_data[j+1:j+1+MAX_LENGTH]) == MAX_LENGTH:
+            new_data = [torch.tensor(encode(raw_data[j:j+MAX_LENGTH]), device=device), torch.tensor(encode(raw_data[j+1:j+1+MAX_LENGTH]), device=device)]
+            raw_dataset.append(new_data)
 
-    j += 1
+        j += 1
 
-train_raw = raw_dataset[:int(0.9*len(raw_dataset))]
-test_raw = raw_dataset[int(0.9*len(raw_dataset)):]
+    train_raw = raw_dataset[:int(0.9*len(raw_dataset))]
+    test_raw = raw_dataset[int(0.9*len(raw_dataset)):]
 
-# shuffle data before splitting into batches
-random.shuffle(train_raw)
-random.shuffle(test_raw)
+    # shuffle data before splitting into batches
+    random.shuffle(train_raw)
+    random.shuffle(test_raw)
 
-def make_batches(raw_data):
-    dataset = []
-    k = 0
-    while k < len(raw_data):
-        batch = raw_data[k:k+BATCH_SIZE]
+    def make_batches(raw_data):
+        dataset = []
+        k = 0
+        while k < len(raw_data):
+            batch = raw_data[k:k+BATCH_SIZE]
 
-        in_tokens = torch.stack([data[0] for data in batch])
-        out_tokens = torch.stack([data[1] for data in batch])
+            in_tokens = torch.stack([data[0] for data in batch])
+            out_tokens = torch.stack([data[1] for data in batch])
 
-        dataset.append([in_tokens, out_tokens])
+            dataset.append([in_tokens, out_tokens])
+            
+            k += BATCH_SIZE
+
+        return dataset
+
+    # break into training and test sets (90-10 split)
+    train_dataset = make_batches(raw_data=train_raw)
+    test_dataset = make_batches(raw_data=test_raw)
+
+    # define eval function for intermediate generation
+    def interm_eval(model: GPT, interval: int, phase: str):
+        model.eval()
         
-        k += BATCH_SIZE
+        print("*"*100)
+        print(f"Generating after {interval} {phase} batches: ")
+        
+        model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
+        
+        print("\n")
+        print("*"*100)
+        
+        model.train()
 
-    return dataset
+    # training loop start
 
-# break into training and test sets (90-10 split)
-train_dataset = make_batches(raw_data=train_raw)
-test_dataset = make_batches(raw_data=test_raw)
+    best_test_loss = float('inf')
+    num_tries = 0
 
-# define eval function for intermediate generation
-def interm_eval(model: GPT, interval: int, phase: str):
-    model.eval()
-    
-    print("*"*100)
-    print(f"Generating after {interval} {phase} batches: ")
-    
-    model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
-    
-    print("\n")
-    print("*"*100)
-    
-    model.train()
+    for epoch in range(1, 100):
 
-# training loop start
+        random.shuffle(train_dataset)
+        model.train()
+        epoch_train_loss_vals = []
+        train_interval = 0
+        epoch_test_loss_vals = []
 
-best_test_loss = float('inf')
-num_tries = 0
+        # going through training batches
+        for data_in, data_out in train_dataset:
 
-for epoch in range(1, 100):
+            optimizer.zero_grad()
 
-    random.shuffle(train_dataset)
-    model.train()
-    epoch_train_loss_vals = []
-    train_interval = 0
-    epoch_test_loss_vals = []
+            pred = model(data_in)
 
-    # going through training batches
-    for data_in, data_out in train_dataset:
-
-        optimizer.zero_grad()
-
-        pred = model(data_in)
-
-        B, T, C = pred.shape
-
-        loss = loss_fn(pred.view(B*T, C), data_out.view(B*T))
-
-        epoch_train_loss_vals.append(loss.item())
-
-        loss.backward()
-        # TODO: Add gradient clipping later
-        optimizer.step()
-
-        if train_interval % 8000 == 0:
-            interm_eval(model=model, interval=train_interval, phase="Train")
-        train_interval += 1
-
-    # going through test batches
-    model.eval()
-    with torch.no_grad():
-        for test_data_in, test_data_out in test_dataset:
-            pred = model(test_data_in)
-            
             B, T, C = pred.shape
-            
-            loss = loss_fn(pred.view(B*T, C), test_data_out.view(B*T))
-            
-            epoch_test_loss_vals.append(loss.item())
 
-    avg_train_loss = sum(epoch_train_loss_vals)/float(len(epoch_train_loss_vals))
-    avg_test_loss = sum(epoch_test_loss_vals)/float(len(epoch_test_loss_vals))
+            loss = loss_fn(pred.view(B*T, C), data_out.view(B*T))
 
-    print("\nEpoch ", epoch, "\nAvg Training loss: ", avg_train_loss, "\nAvg Test Loss: ", avg_test_loss, "\n")
-    print("Generate: ")
-    model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
-    print("\n")
+            epoch_train_loss_vals.append(loss.item())
 
-    if avg_test_loss < best_test_loss:
-        best_test_loss = avg_test_loss
-        print("Saving model....\n\n")
-        torch.save(obj=model.state_dict(), f="./full_transformer.pt")
-        num_tries = 0
-    elif num_tries > 0:
-        print("Loss did not decrease for 2 times in a row, exiting....\n\n")
-        break
-    else:
-        print("Loss greater than previous epoch, not saving model\n\n")
-        num_tries += 1
+            loss.backward()
+            # TODO: Add gradient clipping later
+            optimizer.step()
+
+            if train_interval % 8000 == 0:
+                interm_eval(model=model, interval=train_interval, phase="Train")
+            train_interval += 1
+
+        # going through test batches
+        model.eval()
+        with torch.no_grad():
+            for test_data_in, test_data_out in test_dataset:
+                pred = model(test_data_in)
+                
+                B, T, C = pred.shape
+                
+                loss = loss_fn(pred.view(B*T, C), test_data_out.view(B*T))
+                
+                epoch_test_loss_vals.append(loss.item())
+
+        avg_train_loss = sum(epoch_train_loss_vals)/float(len(epoch_train_loss_vals))
+        avg_test_loss = sum(epoch_test_loss_vals)/float(len(epoch_test_loss_vals))
+
+        print("\nEpoch ", epoch, "\nAvg Training loss: ", avg_train_loss, "\nAvg Test Loss: ", avg_test_loss, "\n")
+        print("Generate: ")
+        model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
+        print("\n")
+
+        if avg_test_loss < best_test_loss:
+            best_test_loss = avg_test_loss
+            print("Saving model....\n\n")
+            torch.save(obj=model.state_dict(), f="./full_transformer.pt")
+            num_tries = 0
+        elif num_tries > 0:
+            print("Loss did not decrease for 2 times in a row, exiting....\n\n")
+            break
+        else:
+            print("Loss greater than previous epoch, not saving model\n\n")
+            num_tries += 1
