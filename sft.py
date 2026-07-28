@@ -33,31 +33,33 @@ def update_final_proj_layer(old_linear_proj: nn.Linear, new_vocab_size: int):
 
     return new_linear_output
 
-def tokenization_helper(text: str, tokenizer: dict, text_type: str):
-    seq_to_tokenize = []
+def tokenization_helper(input_text: str, output_text: str, tokenizer: dict):
+    input_seq = []
+    output_seq = []
 
-    if text_type == "input":
-        if "<user>" in text:
-            seq_to_tokenize.append("<user>")
-            new_text = text.split("<user>")[1]
-            if "<assistant>" in new_text:
-                seq_to_tokenize.append(new_text.split("<assistant>")[0])
-                seq_to_tokenize.append("<assistant>")
-                seq_to_tokenize.append(new_text.split("<assistant>")[1])
+    if "<user>" in input_text:
+        input_seq.append("<user>")
+        new_text = input_text.split("<user>")[1]
+        if "<assistant>" in new_text:
+            input_seq.append(new_text.split("<assistant>")[0])
+            input_seq.append("<assistant>")
+            input_seq.append(new_text.split("<assistant>")[1])
 
-            else:
-                raise Exception("No <assistant> tag in input.")
         else:
-            raise Exception("No <user> tag in input.")
+            raise Exception("No <assistant> tag in input.")
+    else:
+        raise Exception("No <user> tag in input.")
 
-    if text_type == "output":
-        if "<end>" in text:
-            seq_to_tokenize.append(text.split("<end>")[0])
-            seq_to_tokenize.append("<end>")
-        else:
-            raise Exception("No <user> tag in input.")
+    if "<end>" in output_text:
+        output_seq.append(output_text.split("<end>")[0])
+        output_seq.append("<end>")
+    else:
+        raise Exception("No <user> tag in input.")
 
     tokenized_seq = []
+    seq_to_tokenize = input_seq + output_seq
+    
+    assert len(seq_to_tokenize) == len(input_seq) + len(output_seq)
 
     for item in seq_to_tokenize:
         if item in ["<user>", "<assistant>", "<end>", "<pad>"]:
@@ -65,7 +67,9 @@ def tokenization_helper(text: str, tokenizer: dict, text_type: str):
         else:
             tokenized_seq.extend([tokenizer.get(char) for char in item])
 
-    return tokenized_seq
+    batch_labels = [-100]*len(input_seq) + tokenized_seq[len(input_seq):]
+
+    return tokenized_seq, batch_labels
 
 def pad_batch(data, tokenizer):
     max_length_for_batch_input = max([len(d[0]) for d in data])
@@ -102,6 +106,21 @@ def make_batches(raw_data, tokenizer):
         k += BATCH_SIZE
     return dataset
 
+# define eval function for intermediate generation
+def sft_interm_eval(model: GPT, interval: int, phase: str):
+    model.eval()
+    
+    print("*"*100)
+    print(f"Generating after {interval} {phase} batches: ")
+    
+    model.generate(500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
+    model.generate_assistant_response(question="Who is Romeo?", tokenizer=tokenizer, max_tokens=500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
+    
+    print("\n")
+    print("*"*100)
+    
+    model.train()
+
 if __name__ == "__main__":
     # load model 
     model = GPT(vocab_size=vocab_size, max_context_length=MAX_LENGTH, embedding_size=EMBEDDING_SIZE, num_heads=NUM_HEADS, head_size=HEAD_SIZE, num_decoder_layers=NUM_DECODER_BLOCKS)
@@ -121,8 +140,10 @@ if __name__ == "__main__":
         with open("/home/nz-dgx-spark-01/Documents/Nyalazone/pytorch_testing/datasets/sft_shakespeare_dataset/sft_dataset.jsonl", mode="r") as f:
             for line in f:
                 data_entry = json.loads(s=line)
-                input_tokens = tokenization_helper(text=data_entry["input"], text_type="input", tokenizer=tokenizer)
-                output_tokens = tokenization_helper(text=data_entry["output"], text_type="output", tokenizer=tokenizer)
+                input_tokens, output_tokens = tokenization_helper(input_text=data_entry["input"], output_text=data_entry["output"], tokenizer=tokenizer)
+                print(input_tokens)
+                print(output_tokens)
+                exit()
                 raw_dataset.append([input_tokens, output_tokens])
     except Exception as e:
         print(str(e))
@@ -137,3 +158,67 @@ if __name__ == "__main__":
     # Making batches
     train_dataset = make_batches(raw_data=train_raw, tokenizer=tokenizer)
     test_dataset = make_batches(raw_data=test_raw, tokenizer=tokenizer)
+
+    best_test_loss = float('inf')
+    num_tries = 0
+
+    for epoch in range(1, 100):
+
+        random.shuffle(train_dataset)
+        model.train()
+        epoch_train_loss_vals = []
+        train_interval = 0
+        epoch_test_loss_vals = []
+
+        # going through training batches
+        for data_in, data_out in train_dataset:
+
+            optimizer.zero_grad()
+
+            pred = model(data_in.to(device))
+
+            B, T, C = pred.shape
+
+            loss = loss_fn(pred.view(B*T, C), data_out.to(device).view(B*T))
+
+            epoch_train_loss_vals.append(loss.item())
+
+            loss.backward()
+            # TODO: Add gradient clipping later
+            optimizer.step()
+
+            if train_interval % 8000 == 0:
+                sft_interm_eval(model=model, interval=train_interval, phase="Train")
+            train_interval += 1
+
+        # going through test batches
+        model.eval()
+        with torch.no_grad():
+            for test_data_in, test_data_out in test_dataset:
+                pred = model(test_data_in.to(device))
+                
+                B, T, C = pred.shape
+                
+                loss = loss_fn(pred.view(B*T, C), test_data_out.to(device).view(B*T))
+                
+                epoch_test_loss_vals.append(loss.item())
+
+        avg_train_loss = sum(epoch_train_loss_vals)/float(len(epoch_train_loss_vals))
+        avg_test_loss = sum(epoch_test_loss_vals)/float(len(epoch_test_loss_vals))
+
+        print("\nEpoch ", epoch, "\nAvg Training loss: ", avg_train_loss, "\nAvg Test Loss: ", avg_test_loss, "\n")
+        print("Generate: ")
+        model.generate_assistant_response(question="Who is Romeo?", tokenizer=tokenizer, max_tokens=500, token_to_char=token_to_char, max_context_length=MAX_LENGTH)
+        print("\n")
+
+        if avg_test_loss < best_test_loss:
+            best_test_loss = avg_test_loss
+            print("Saving model....\n\n")
+            torch.save(obj=model.state_dict(), f="./full_transformer_tiny_shakespeare_sft.pt")
+            num_tries = 0
+        elif num_tries > 0:
+            print("Loss did not decrease for 2 times in a row, exiting....\n\n")
+            break
+        else:
+            print("Loss greater than previous epoch, not saving model\n\n")
+            num_tries += 1

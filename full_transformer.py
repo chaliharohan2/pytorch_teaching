@@ -137,6 +137,10 @@ class GPT(nn.Module):
 
                 sequence = torch.cat([sequence, pred], dim=1)
 
+    def generate_assistant_response(self, question, tokenizer, max_tokens, token_to_char, max_context_length):
+        final_input = [tokenizer.get("<user>"), tokenizer.get("\n"), *[tokenizer.get(char) for char in question], tokenizer.get("<assistant>"), tokenizer.get("\n")]
+        self.generate(max_tokens=max_tokens, token_to_char=token_to_char, max_context_length=max_context_length, start_token=final_input)
+
 if DATASET_TO_USE == "tiny_shakespeare":
     with open("/home/nz-dgx-spark-01/Documents/Nyalazone/pytorch_testing/shakespeare_dataset.txt", mode="r") as f:
         raw_data = f.read()
