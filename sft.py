@@ -76,7 +76,10 @@ def tokenization_helper(input_text: str, output_text: str, tokenizer: dict):
     output_tok_seq = _tokenize(seq_to_tokenize=output_seq, tokenizer=tokenizer)
 
     final_tokenized_seq = input_tok_seq + output_tok_seq
-    batch_labels = [-100]*len(input_tok_seq) + output_tok_seq
+
+    # shifting labels to the right by 1 so that each token predicts the next token, not the same one
+    final_tokenized_seq = final_tokenized_seq[:-1] 
+    batch_labels = [-100]*(len(input_tok_seq)-1) + output_tok_seq
 
     assert len(final_tokenized_seq) == len(batch_labels)
 
@@ -138,7 +141,7 @@ if __name__ == "__main__":
 
     # load training components
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100) # to ignore padded tokens
-    optimizer = torch.optim.AdamW(params=model.parameters(), lr=3e-4)
+    optimizer = torch.optim.AdamW(params=model.parameters(), lr=1e-5)
 
     raw_dataset = []
 

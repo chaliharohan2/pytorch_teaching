@@ -124,22 +124,26 @@ class GPT(nn.Module):
 
         return x
 
-    def generate(self, max_tokens, token_to_char, max_context_length, start_token=1):
+    def generate(self, max_tokens, token_to_char, max_context_length, start_token=1, greedy=False):
         with torch.no_grad():
             sequence = torch.tensor([start_token], device=device).unsqueeze(0) if type(start_token) == int else torch.tensor(start_token, device=device).unsqueeze(0)
             for _ in range(max_tokens):
                 preds = self(sequence[:, -max_context_length:]) # 1, C, vocab_size - making sure only the max context length tokens go in
                 preds = preds[:, -1, :] # only interested in the last token vals - 1, vocab_size
                 preds = self.softmax(preds) # get probabilities of each word in vocab - 1, vocab_size
-                pred = torch.multinomial(preds, num_samples=1)
+                # if greedy decoding then take most likely token only
+                if greedy:
+                    pred = torch.argmax(preds, dim=-1).unsqueeze(0)
+                else:
+                    pred = torch.multinomial(preds, num_samples=1)
                 pred_token = token_to_char.get(pred.item())
                 print(pred_token, end="", flush=True)
 
                 sequence = torch.cat([sequence, pred], dim=1)
 
-    def generate_assistant_response(self, question, tokenizer, max_tokens, token_to_char, max_context_length):
+    def generate_assistant_response(self, question, tokenizer, max_tokens, token_to_char, max_context_length, greedy=False):
         final_input = [tokenizer.get("<user>"), tokenizer.get("\n"), *[tokenizer.get(char) for char in question], tokenizer.get("\n"), tokenizer.get("<assistant>"), tokenizer.get("\n")]
-        self.generate(max_tokens=max_tokens, token_to_char=token_to_char, max_context_length=max_context_length, start_token=final_input)
+        self.generate(max_tokens=max_tokens, token_to_char=token_to_char, max_context_length=max_context_length, start_token=final_input, greedy=greedy)
 
 if DATASET_TO_USE == "tiny_shakespeare":
     with open("/home/nz-dgx-spark-01/Documents/Nyalazone/pytorch_testing/shakespeare_dataset.txt", mode="r") as f:
@@ -163,12 +167,13 @@ encode = lambda x: [tokenizer.get(c) for c in x]
 
 vocab_size = len(raw_unique_chars)
 
-# Training components initialized
-model = GPT(vocab_size=vocab_size, max_context_length=MAX_LENGTH, embedding_size=EMBEDDING_SIZE, num_heads=NUM_HEADS, head_size=HEAD_SIZE, num_decoder_layers=NUM_DECODER_BLOCKS)
-loss_fn = nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(params=model.parameters(), lr=3e-4)
-
 if __name__ == "__main__":
+
+    # Training components initialized
+    model = GPT(vocab_size=vocab_size, max_context_length=MAX_LENGTH, embedding_size=EMBEDDING_SIZE, num_heads=NUM_HEADS, head_size=HEAD_SIZE, num_decoder_layers=NUM_DECODER_BLOCKS)
+    loss_fn = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(params=model.parameters(), lr=3e-4)
+
     j = 0
     raw_dataset = []
 
