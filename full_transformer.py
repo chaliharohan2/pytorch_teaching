@@ -7,14 +7,14 @@ import json
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
-MAX_LENGTH = 200
+MAX_LENGTH = 300
 BATCH_SIZE = 32
 EMBEDDING_SIZE = 200
 
 HEAD_SIZE = 20
 NUM_HEADS = 10
 NUM_DECODER_BLOCKS = 6
-DROPOUT_VAL = 0.2
+DROPOUT_VAL = 0.1
 DATASET_TO_USE = "tiny_shakespeare"
 # DATASET_TO_USE = "full_shakespeare"
 
@@ -138,7 +138,7 @@ class GPT(nn.Module):
                 sequence = torch.cat([sequence, pred], dim=1)
 
     def generate_assistant_response(self, question, tokenizer, max_tokens, token_to_char, max_context_length):
-        final_input = [tokenizer.get("<user>"), tokenizer.get("\n"), *[tokenizer.get(char) for char in question], tokenizer.get("<assistant>"), tokenizer.get("\n")]
+        final_input = [tokenizer.get("<user>"), tokenizer.get("\n"), *[tokenizer.get(char) for char in question], tokenizer.get("\n"), tokenizer.get("<assistant>"), tokenizer.get("\n")]
         self.generate(max_tokens=max_tokens, token_to_char=token_to_char, max_context_length=max_context_length, start_token=final_input)
 
 if DATASET_TO_USE == "tiny_shakespeare":
@@ -278,7 +278,7 @@ if __name__ == "__main__":
         if avg_test_loss < best_test_loss:
             best_test_loss = avg_test_loss
             print("Saving model....\n\n")
-            torch.save(obj=model.state_dict(), f="./full_transformer_full_shakespeare.pt")
+            torch.save(obj=model.state_dict(), f="./full_transformer_tiny_shakespeare.pt")
             num_tries = 0
         elif num_tries > 0:
             print("Loss did not decrease for 2 times in a row, exiting....\n\n")

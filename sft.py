@@ -4,17 +4,19 @@ from full_transformer import MAX_LENGTH, EMBEDDING_SIZE, HEAD_SIZE, NUM_DECODER_
 import json
 import random
 
-BATCH_SIZE = 8
+BATCH_SIZE = 2
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
-# update the tokenizer with new tokens for user message start, assistant message start, end of sequence, and padding tokens
-new_tokens = ["<user>", "<assistant>", "<end>"]
+# Update the tokenizer with chat-control and unknown-character tokens.
+new_tokens = ["<user>", "<assistant>", "<end>", "<unk>"]
 for tok in new_tokens:
     if tok not in tokenizer:
         token_to_char[len(tokenizer)] = tok
         tokenizer[tok] = len(tokenizer)
-tokenizer["<pad>"] = -100
+if "<pad>" not in tokenizer:
+    token_to_char[len(tokenizer)] = "<pad>"
+    tokenizer["<pad>"] = len(tokenizer)
 
 new_vocab_size = len(tokenizer)
 
@@ -32,6 +34,20 @@ def update_final_proj_layer(old_linear_proj: nn.Linear, new_vocab_size: int):
         new_linear_output.bias[:old_linear_proj.bias.size(0)] = old_linear_proj.bias
 
     return new_linear_output
+
+def _tokenize(seq_to_tokenize, tokenizer):
+
+    tokenized_seq = []
+
+    for item in seq_to_tokenize:
+        if item in ["<user>", "<assistant>", "<end>", "<pad>"]:
+            tokenized_seq.append(tokenizer.get(item))
+        else:
+            tokenized_seq.extend(
+                tokenizer.get(char, tokenizer["<unk>"]) for char in item
+            )
+
+    return tokenized_seq
 
 def tokenization_helper(input_text: str, output_text: str, tokenizer: dict):
     input_seq = []
@@ -56,40 +72,30 @@ def tokenization_helper(input_text: str, output_text: str, tokenizer: dict):
     else:
         raise Exception("No <user> tag in input.")
 
-    tokenized_seq = []
-    seq_to_tokenize = input_seq + output_seq
-    
-    assert len(seq_to_tokenize) == len(input_seq) + len(output_seq)
+    input_tok_seq = _tokenize(seq_to_tokenize=input_seq, tokenizer=tokenizer)
+    output_tok_seq = _tokenize(seq_to_tokenize=output_seq, tokenizer=tokenizer)
 
-    for item in seq_to_tokenize:
-        if item in ["<user>", "<assistant>", "<end>", "<pad>"]:
-            tokenized_seq.append(tokenizer.get(item))
-        else:
-            tokenized_seq.extend([tokenizer.get(char) for char in item])
+    final_tokenized_seq = input_tok_seq + output_tok_seq
+    batch_labels = [-100]*len(input_tok_seq) + output_tok_seq
 
-    batch_labels = [-100]*len(input_seq) + tokenized_seq[len(input_seq):]
+    assert len(final_tokenized_seq) == len(batch_labels)
 
-    return tokenized_seq, batch_labels
+    return final_tokenized_seq, batch_labels
 
-def pad_batch(data, tokenizer):
-    max_length_for_batch_input = max([len(d[0]) for d in data])
-    max_length_for_batch_output = max([len(d[1]) for d in data])
+def _pad_batch(data, tokenizer):
+    # both input and output sequences will be of the same size 
+    max_length = max([len(d[0]) for d in data])
 
     input_stack = []
     output_stack = []
 
-    for d in data:
-        for data_in, data_out in d:
+    for data_in, data_out in data:
+        padding_length = max_length - len(data_in)
+        padded_input = data_in + [tokenizer["<pad>"]] * padding_length
+        padded_output = data_out + [-100] * padding_length
 
-            if len(data_in) < max_length_for_batch_input:
-                len_data_in = len(data_in)
-                data_in.extend([tokenizer.get("<pad>")]*(max_length_for_batch_input-len_data_in))
-                input_stack.append(torch.tensor(data_in, device=torch.device("cpu")))
-
-            if len(data_out) < max_length_for_batch_output:
-                len_data_out = len(data_out)
-                data_out.extend([tokenizer.get("<pad>")]*(max_length_for_batch_output-len_data_out))
-                output_stack.append(torch.tensor(data_out, device=torch.device("cpu")))
+        input_stack.append(torch.tensor(padded_input, device=torch.device("cpu")))
+        output_stack.append(torch.tensor(padded_output, device=torch.device("cpu")))
 
     batch_input = torch.stack(input_stack)
     batch_output = torch.stack(output_stack)
@@ -101,7 +107,7 @@ def make_batches(raw_data, tokenizer):
     k = 0
     while k < len(raw_data):
         batch = raw_data[k:k+BATCH_SIZE]
-        batch_input_tokens, batch_output_tokens = pad_batch(data=batch, tokenizer=tokenizer)
+        batch_input_tokens, batch_output_tokens = _pad_batch(data=batch, tokenizer=tokenizer)
         dataset.append([batch_input_tokens, batch_output_tokens])
         k += BATCH_SIZE
     return dataset
@@ -141,9 +147,6 @@ if __name__ == "__main__":
             for line in f:
                 data_entry = json.loads(s=line)
                 input_tokens, output_tokens = tokenization_helper(input_text=data_entry["input"], output_text=data_entry["output"], tokenizer=tokenizer)
-                print(input_tokens)
-                print(output_tokens)
-                exit()
                 raw_dataset.append([input_tokens, output_tokens])
     except Exception as e:
         print(str(e))
