@@ -1,7 +1,7 @@
 import torch 
 import torch.nn as nn
 
-device = torch.device("cpu")
+device = torch.device("cuda")
 MAX_LENGTH = 10
 BATCH_SIZE = 32
 EMBEDDING_SIZE = 200
@@ -10,16 +10,17 @@ HEAD_SIZE = 400
 class SimpleTransformer(nn.Module):
     def __init__(self, vocab_size, embedding_size):
         super().__init__()
-        self.embedding_table = nn.Embedding(vocab_size, embedding_size)
-        self.w_q = nn.Linear(embedding_size, HEAD_SIZE)
-        self.w_k = nn.Linear(embedding_size, HEAD_SIZE)
+        self.embedding_table = nn.Embedding(vocab_size, embedding_size, device=device)
+        self.w_q = nn.Linear(embedding_size, HEAD_SIZE, device=device)
+        self.w_k = nn.Linear(embedding_size, HEAD_SIZE, device=device)
         self.relu = nn.ReLU()
-        self.w_v = nn.Linear(embedding_size, HEAD_SIZE)
-        self.proj = nn.Linear(HEAD_SIZE, embedding_size)
+        self.w_v = nn.Linear(embedding_size, HEAD_SIZE, device=device)
+        self.proj = nn.Linear(HEAD_SIZE, embedding_size, device=device)
         self.softmax = nn.Softmax(dim=-1)
-        self.l1 = nn.Linear(embedding_size, 4 * embedding_size)
-        self.l2 = nn.Linear(4 * embedding_size, embedding_size)
-        self.l_out = nn.Linear(embedding_size, vocab_size)
+        self.l1 = nn.Linear(embedding_size, 4 * embedding_size, device=device)
+        self.l2 = nn.Linear(4 * embedding_size, embedding_size, device=device)
+        self.l_out = nn.Linear(embedding_size, vocab_size, device=device)
+        self.layer_norm = nn.LayerNorm(embedding_size, device=device)
 
     def forward(self, data_in):
 
@@ -33,7 +34,7 @@ class SimpleTransformer(nn.Module):
         v = self.w_v(x)
 
         # attention calculation
-        query_key_rez = q @ k.transpose(1, 2) # batch, length of context, length of context
+        query_key_rez = (q @ k.transpose(1, 2))/(HEAD_SIZE**0.5) # batch, length of context, length of context
         tril = torch.tril(torch.ones(C, C, device=device))
         query_key_rez = query_key_rez.masked_fill(tril==0,float('-inf'))
         query_key_rez = self.softmax(query_key_rez)
@@ -42,13 +43,13 @@ class SimpleTransformer(nn.Module):
         attn_proj = self.proj(attn_output) # project attention output to same dimension as embedding vector
 
         # attention block
-        x = x + attn_proj # adding back x for residual connection 
+        x = self.layer_norm(x + attn_proj) # adding back x for residual connection 
 
         # feed forward
         ff_output = self.l2(self.relu(self.l1(x)))
 
         # feedforward block
-        x = x + ff_output # adding back x for residual connection 
+        x = self.layer_norm(x + ff_output) # adding back x for residual connection 
 
         # final logits
         logits = self.l_out(x)
@@ -70,7 +71,7 @@ class SimpleTransformer(nn.Module):
 
 
 
-with open("/home/rohan/Nyalazone/pytorch_testing/shakespeare_dataset.txt", mode="r") as f:
+with open("/home/nz-dgx-spark-01/Documents/Nyalazone/pytorch_testing/shakespeare_dataset.txt", mode="r") as f:
     raw_data = f.read()
 
 raw_unique_chars = list(sorted(set(raw_data)))
