@@ -53,5 +53,8 @@ top_pair = max(pair_counts, key=pair_counts.get)
 merges, tokens = encode(encoded_text)
 print(merges)
 print(tokens)  
-print("After tokenizing length: ", len(tokens))       
+print("After tokenizing length: ", len(tokens))     
 
+tokens_to_decode = [72, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100, 44, 32, 115, 111, 109, 256, 97, 112, 112, 108, 256, 105, 110, 32, 116, 111, 119, 110, 46]
+print("Decoding: ", "".join(decode(tokens=tokens_to_decode, merges=merges)))
+print("Original text: ", text)
